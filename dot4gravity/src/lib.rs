@@ -36,9 +36,13 @@ const NUM_OF_PLAYERS: usize = 2;
 const NUM_OF_BOMBS_PER_PLAYER: u8 = 3;
 const NUM_OF_BLOCKS: u8 = 10;
 
+const NB_POINT_STONE: u8 = 1;
+const NB_POINT_ENEMY_STONE_DESTROYED: u8 = 1;
+
 type PlayerIndex = u8;
 type Position = u8;
 type Seed = u32;
+type Score = u8;
 
 /// Represents a cell of the board.
 #[allow(private_in_public)]
@@ -155,6 +159,18 @@ impl Board {
         position.is_inside_board() && self.get_cell(position).is_stone_droppable()
     }
 
+    // If cell is a stone, return owner player index
+    fn player_index_stone(&self, position: &Coordinates) -> Option<PlayerIndex> {
+        if !position.is_inside_board() {
+            return None;
+        }
+        if let Cell::Stone(p) = self.get_cell(position) {
+            Some(p)
+        } else {
+            None
+        }
+    }
+
     fn get_cell(&self, position: &Coordinates) -> Cell {
         let cell = &self.cells[position.row as usize][position.col as usize];
         *cell
@@ -168,7 +184,8 @@ impl Board {
         );
     }
 
-    fn explode_bomb(&mut self, bomb_position: Coordinates) {
+    /// Return coordinate affected by a potential explosion
+    fn explodable_coordinate(&self, position: &Coordinates) -> Vec<Coordinates> {
         let offsets: [(i8, i8); 9] = [
             (0, 0),
             (-1, -1),
@@ -185,15 +202,19 @@ impl Board {
             .iter()
             .map(|(row_offset, col_offset)| {
                 Coordinates::new(
-                    (row_offset + bomb_position.row as i8) as u8,
-                    (col_offset + bomb_position.col as i8) as u8,
+                    (row_offset + position.row as i8) as u8,
+                    (col_offset + position.col as i8) as u8,
                 )
             })
-            .for_each(|position| {
-                if self.is_explodable(&position) {
-                    self.update_cell(position, Cell::Empty)
-                }
-            });
+            .collect()
+    }
+
+    fn explode_bomb(&mut self, bomb_position: Coordinates) {
+        self.explodable_coordinate(&bomb_position).into_iter().for_each(|position| {
+            if self.is_explodable(&position) {
+                self.update_cell(position, Cell::Empty)
+            }
+        })
     }
 }
 
@@ -264,6 +285,7 @@ pub struct GameState<Player> {
     pub players: [Player; NUM_OF_PLAYERS],
     /// Number of bombs available for each player.
     pub bombs: [(Player, u8); NUM_OF_PLAYERS],
+    pub scores: [(Player, Score); NUM_OF_PLAYERS],
     /// Represents the last move.
     pub last_move: Option<LastMove<Player>>,
 }
@@ -299,6 +321,39 @@ impl<Player: PartialEq + Clone> GameState<Player> {
             }
         }
     }
+
+    pub fn get_player_score(&self, player: &Player) -> Score {
+        self.scores
+            .iter()
+            .find(|(p, _)| *p == *player)
+            .map(|(_, current_score)| *current_score)
+            .unwrap()
+    }
+
+    pub fn increase_player_score(&mut self, player: &Player, add_score: u8) {
+        for (p, current_score) in self.scores.iter_mut() {
+            if *p == *player {
+                *current_score += add_score;
+            }
+        }
+    }
+
+    // Return nb opponent player stones in the explodable area
+    fn adjacent_opponent_stone(&self, position: Coordinates, player: &Player) -> u8 {
+        let mut nb_adjacent_opponent_stone = 0;
+
+        self.board.explodable_coordinate(&position).into_iter().for_each(|position| {
+            match self.board.player_index_stone(&position) {
+                Some(player_index) if player_index != self.player_index(player) => {
+                    nb_adjacent_opponent_stone += 1;
+                }
+                _ => {}
+            }
+        });
+
+        nb_adjacent_opponent_stone
+    }
+
     pub fn is_player_turn(&self, player: &Player) -> bool {
         self.next_player == *player
     }
@@ -396,6 +451,10 @@ impl<Player: PartialEq + Clone> Game<Player> {
             winner: Default::default(),
             next_player: player1.clone(),
             players: [player1.clone(), player2.clone()],
+            scores: [
+                (player1.clone(), Score::default()),
+                (player2.clone(), Score::default()),
+            ],
             bombs: [
                 (player1, NUM_OF_BOMBS_PER_PLAYER),
                 (player2, NUM_OF_BOMBS_PER_PLAYER),
@@ -469,6 +528,11 @@ impl<Player: PartialEq + Clone> Game<Player> {
                     match game_state.board.get_cell(&position) {
                         // A cell bomb must explode.
                         Cell::Bomb([_, _]) => {
+                            game_state.increase_player_score(
+                                &player,
+                                NB_POINT_ENEMY_STONE_DESTROYED
+                                    * game_state.adjacent_opponent_stone(position, &player),
+                            );
                             game_state.board.explode_bomb(position);
                             stop = true;
                         }
@@ -517,6 +581,11 @@ impl<Player: PartialEq + Clone> Game<Player> {
                     match game_state.board.get_cell(&position) {
                         // A cell bomb must explode.
                         Cell::Bomb([_, _]) => {
+                            game_state.increase_player_score(
+                                &player,
+                                NB_POINT_ENEMY_STONE_DESTROYED
+                                    * game_state.adjacent_opponent_stone(position, &player),
+                            );
                             game_state.board.explode_bomb(position);
                             break;
                         }
@@ -568,6 +637,12 @@ impl<Player: PartialEq + Clone> Game<Player> {
                     match game_state.board.get_cell(&position) {
                         // A cell bomb must explode.
                         Cell::Bomb([_, _]) => {
+                            game_state.increase_player_score(
+                                &player,
+                                NB_POINT_ENEMY_STONE_DESTROYED
+                                    * game_state.adjacent_opponent_stone(position, &player),
+                            );
+
                             game_state.board.explode_bomb(position);
                             break;
                         }
@@ -620,6 +695,12 @@ impl<Player: PartialEq + Clone> Game<Player> {
                     match game_state.board.get_cell(&position) {
                         // A cell bomb must explode.
                         Cell::Bomb([_, _]) => {
+                            game_state.increase_player_score(
+                                &player,
+                                NB_POINT_ENEMY_STONE_DESTROYED
+                                    * game_state.adjacent_opponent_stone(position, &player),
+                            );
+
                             game_state.board.explode_bomb(position);
                             stop = true;
                         }
@@ -662,6 +743,7 @@ impl<Player: PartialEq + Clone> Game<Player> {
             }
         }
 
+        game_state.increase_player_score(&player, NB_POINT_STONE);
         game_state.last_move = Some(LastMove::new(player, side, position));
         game_state.next_player = game_state.next_player().clone();
         game_state = Game::check_winner_player(game_state);
